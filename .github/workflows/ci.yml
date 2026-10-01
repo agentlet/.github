@@ -1,0 +1,196 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned actionlint release, checksum-verified against the release's own
+  # checksums file (see "Install actionlint"). Bump deliberately.
+  ACTIONLINT_VERSION: '1.7.12'
+
+jobs:
+  test:
+    name: Unit tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [ '20.x', '22.x', '24.x' ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Use Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Run tests
+        # The scan CLI tests use a fake osv-scanner and --offline, so they
+        # need neither network nor the real binary.
+        run: node --test
+
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "${archive}" "${base}/${archive}"
+          curl -fsSL -o actionlint_checksums.txt "${base}/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          grep " ${archive}\$" actionlint_checksums.txt | sha256sum -c -
+          tar -xzf "${archive}" actionlint
+          ./actionlint -version
+
+      - name: Lint all workflows
+        run: ./actionlint -color
+
+  self-test:
+    name: Self-test the actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Each scan below runs with fail-on-gate: false so its outcome can be
+      # asserted, and with upload-sarif: false so no code scanning write
+      # access is needed. artifact-name is unique per use (a name can be
+      # uploaded once per workflow run).
+      - name: Scan a SBOM with a known-vulnerable package (xlsx 0.18.5)
+        id: sbom_vulnerable
+        uses: ./actions/dependency-scan
+        with:
+          blocking-sbom: test-fixtures/sbom-vulnerable.cdx.json
+          lockfile: ''
+          report-dir: reports/sbom-vulnerable
+          upload-sarif: 'false'
+          fail-on-gate: 'false'
+          artifact-name: self-test-sbom-vulnerable
+
+      - name: Assert the vulnerable SBOM fails the gate
+        env:
+          OUTCOME: ${{ steps.sbom_vulnerable.outputs.gate-outcome }}
+          COUNT: ${{ steps.sbom_vulnerable.outputs.blocking-count }}
+          REPORT: ${{ steps.sbom_vulnerable.outputs.report-path }}
+          SARIF: ${{ steps.sbom_vulnerable.outputs.sarif-path }}
+        run: |
+          set -euo pipefail
+          [ "${OUTCOME}" = "fail" ] || { echo "expected gate-outcome=fail, got '${OUTCOME}'"; exit 1; }
+          [ "${COUNT}" -ge 1 ] || { echo "expected at least one blocking finding, got '${COUNT}'"; exit 1; }
+          test -s "${REPORT}"
+          test -s "${SARIF}"
+
+      - name: Scan a clean SBOM (one component has no purl)
+        id: sbom_clean
+        uses: ./actions/dependency-scan
+        with:
+          blocking-sbom: test-fixtures/sbom-clean.cdx.json
+          lockfile: ''
+          report-dir: reports/sbom-clean
+          upload-sarif: 'false'
+          fail-on-gate: 'false'
+          artifact-name: self-test-sbom-clean
+
+      - name: Assert the clean SBOM passes the gate
+        env:
+          OUTCOME: ${{ steps.sbom_clean.outputs.gate-outcome }}
+          COUNT: ${{ steps.sbom_clean.outputs.blocking-count }}
+        run: |
+          set -euo pipefail
+          [ "${OUTCOME}" = "pass" ] || { echo "expected gate-outcome=pass, got '${OUTCOME}'"; exit 1; }
+          [ "${COUNT}" = "0" ] || { echo "expected 0 blocking findings, got '${COUNT}'"; exit 1; }
+
+      - name: Scan a vulnerable lockfile as the blocking scope
+        id: lockfile_vulnerable
+        uses: ./actions/dependency-scan
+        with:
+          blocking-lockfile: 'true'
+          lockfile: test-fixtures/lockfile-vulnerable/package-lock.json
+          report-dir: reports/lockfile-vulnerable
+          upload-sarif: 'false'
+          fail-on-gate: 'false'
+          artifact-name: self-test-lockfile-vulnerable
+
+      - name: Assert the vulnerable lockfile fails the gate
+        env:
+          OUTCOME: ${{ steps.lockfile_vulnerable.outputs.gate-outcome }}
+        run: |
+          [ "${OUTCOME}" = "fail" ] || { echo "expected gate-outcome=fail, got '${OUTCOME}'"; exit 1; }
+
+      - name: Scan a clean lockfile as the blocking scope
+        id: lockfile_clean
+        uses: ./actions/dependency-scan
+        with:
+          blocking-lockfile: 'true'
+          lockfile: test-fixtures/lockfile-clean/package-lock.json
+          report-dir: reports/lockfile-clean
+          upload-sarif: 'false'
+          fail-on-gate: 'false'
+          artifact-name: self-test-lockfile-clean
+
+      - name: Assert the clean lockfile passes the gate
+        env:
+          OUTCOME: ${{ steps.lockfile_clean.outputs.gate-outcome }}
+        run: |
+          [ "${OUTCOME}" = "pass" ] || { echo "expected gate-outcome=pass, got '${OUTCOME}'"; exit 1; }
+
+      - name: Build a throwaway esbuild metafile and node_modules tree
+        run: |
+          set -euo pipefail
+          mkdir -p tmp/esbuild/node_modules/xlsx tmp/esbuild/meta
+          printf '{"name":"xlsx","version":"0.18.5","license":"Apache-2.0"}\n' > tmp/esbuild/node_modules/xlsx/package.json
+          printf '{"inputs":{"src/index.ts":{"bytes":1},"node_modules/xlsx/xlsx.js":{"bytes":1}}}\n' > tmp/esbuild/meta/app.meta.json
+
+      - name: Generate a SBOM from the metafile
+        id: esbuild_sbom
+        uses: ./actions/sbom-from-esbuild
+        with:
+          metafiles: tmp/esbuild/meta/app.meta.json
+          root: tmp/esbuild
+          name: self-test-app
+          version: 1.0.0
+          output: reports/esbuild/sbom-bundle.cdx.json
+
+      - name: Assert the generated SBOM names xlsx
+        env:
+          SBOM_PATH: ${{ steps.esbuild_sbom.outputs.sbom-path }}
+        run: |
+          set -euo pipefail
+          [ "${SBOM_PATH}" = "reports/esbuild/sbom-bundle.cdx.json" ]
+          grep -q 'pkg:npm/xlsx@0.18.5' "${SBOM_PATH}"
+
+      - name: Scan the generated SBOM
+        id: esbuild_scan
+        uses: ./actions/dependency-scan
+        with:
+          blocking-sbom: ${{ steps.esbuild_sbom.outputs.sbom-path }}
+          lockfile: ''
+          report-dir: reports/esbuild-scan
+          upload-sarif: 'false'
+          fail-on-gate: 'false'
+          artifact-name: self-test-esbuild-scan
+
+      - name: Assert the generated SBOM fails the gate
+        env:
+          OUTCOME: ${{ steps.esbuild_scan.outputs.gate-outcome }}
+        run: |
+          [ "${OUTCOME}" = "fail" ] || { echo "expected gate-outcome=fail, got '${OUTCOME}'"; exit 1; }

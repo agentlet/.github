@@ -1,0 +1,61 @@
+name: SBOM from esbuild metafile
+description: >-
+  Builds a CycloneDX 1.5 SBOM of what an esbuild bundle ships, from one or
+  more esbuild metafiles. Pair it with the dependency-scan action.
+author: agentlet
+branding:
+  icon: package
+  color: blue
+
+inputs:
+  metafiles:
+    description: Newline or comma separated list of esbuild metafile paths.
+    required: true
+  root:
+    description: Directory that holds node_modules and that the metafile input paths are relative to.
+    required: false
+    default: '.'
+  name:
+    description: metadata.component name. Defaults to the name in the root package.json.
+    required: false
+    default: ''
+  version:
+    description: metadata.component version. Defaults to the version in the root package.json.
+    required: false
+    default: ''
+  output:
+    description: Where to write the SBOM.
+    required: false
+    default: reports/security/sbom-bundle.cdx.json
+
+outputs:
+  sbom-path:
+    description: Path of the generated SBOM.
+    value: ${{ steps.sbom.outputs.sbom-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Generate SBOM
+      id: sbom
+      shell: bash
+      env:
+        METAFILES: ${{ inputs.metafiles }}
+        SBOM_ROOT: ${{ inputs.root }}
+        SBOM_NAME: ${{ inputs.name }}
+        SBOM_VERSION: ${{ inputs.version }}
+        SBOM_OUTPUT: ${{ inputs.output }}
+      run: |
+        set -euo pipefail
+        if ! command -v node >/dev/null 2>&1; then
+          echo "::error::Node.js 20 or newer is required on PATH. Add actions/setup-node before this action (ubuntu-latest already has it)."
+          exit 1
+        fi
+        # The whole repository is checked out next to this action, so the
+        # shared implementation in dependency-scan is reachable by path.
+        node "${{ github.action_path }}/../dependency-scan/bin/sbom-from-esbuild-metafile.mjs" \
+          "--metafile=${METAFILES}" \
+          "--root=${SBOM_ROOT}" \
+          "--name=${SBOM_NAME}" \
+          "--version=${SBOM_VERSION}" \
+          "--out=${SBOM_OUTPUT}"

@@ -1,0 +1,11 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": { "component": { "type": "library", "name": "fixture-clean", "version": "1.0.0" } },
+  "components": [
+    { "type": "library", "bom-ref": "pkg:npm/is-number@7.0.0", "name": "is-number", "version": "7.0.0", "purl": "pkg:npm/is-number@7.0.0" },
+    { "type": "library", "bom-ref": "pkg:npm/ms@2.1.3", "name": "ms", "version": "2.1.3", "purl": "pkg:npm/ms@2.1.3" },
+    { "type": "library", "name": "cdn-only-script", "version": "1.0.0" }
+  ]
+}

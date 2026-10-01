@@ -1,0 +1,9 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": { "component": { "type": "library", "name": "fixture-vulnerable", "version": "1.0.0" } },
+  "components": [
+    { "type": "library", "bom-ref": "pkg:npm/xlsx@0.18.5", "name": "xlsx", "version": "0.18.5", "purl": "pkg:npm/xlsx@0.18.5" }
+  ]
+}
