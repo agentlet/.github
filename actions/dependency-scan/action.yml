@@ -143,8 +143,9 @@ runs:
         cd "${dir}"
         base="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}"
         # Saved under its release name: that is what SHA256SUMS lists.
-        curl -fsSL -o osv-scanner_linux_amd64 "${base}/osv-scanner_linux_amd64"
-        curl -fsSL -o osv-scanner_SHA256SUMS "${base}/osv-scanner_SHA256SUMS"
+        # --retry covers transient errors such as a 504 from the release host.
+        curl -fsSL --retry 3 -o osv-scanner_linux_amd64 "${base}/osv-scanner_linux_amd64"
+        curl -fsSL --retry 3 -o osv-scanner_SHA256SUMS "${base}/osv-scanner_SHA256SUMS"
         grep ' osv-scanner_linux_amd64$' osv-scanner_SHA256SUMS | sha256sum -c -
         chmod +x osv-scanner_linux_amd64
         mkdir -p bin
